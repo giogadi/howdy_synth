@@ -1,9 +1,34 @@
 #include "AudioPluginUtil.h"
 #include "synth_common.h"
 
-namespace Howdy
+namespace
 {
-    float gNewFreq = -1.0f;
+    common::EventQueue gEventQueue(common::kEventQueueLength);
+    // TODO: THIS IS PROBABLY HORRIBLY UNSAFE
+    int* gSynthTicks = nullptr;
+}
+
+extern "C" bool NoteOn(int midiNum, int ticksUntilEvent) {
+    common::Event e;
+    e.type = common::EventType::NoteOn;
+    e.midiNote = midiNum;
+    e.timeInTicks = ticksUntilEvent;
+    return gEventQueue.try_push(e);
+}
+
+extern "C" bool NoteOff(int midiNum, int ticksUntilEvent) {
+    common::Event e;
+    e.type = common::EventType::NoteOff;
+    e.midiNote = midiNum;
+    e.timeInTicks = ticksUntilEvent;
+    return gEventQueue.try_push(e);
+}
+
+extern "C" int GetSynthTicks() {
+    return *gSynthTicks;
+}
+
+namespace Howdy {
 
     enum Param
     {
@@ -26,14 +51,6 @@ namespace Howdy
         unsigned char pad[(sizeof(Data) + 15) & ~15]; 
     };
 
-    void NoteOn(int midiNum, int ticksUntilEvent) {
-        // TODO
-    }
-
-    void NoteOff(int midiNum, int ticksUntilEvent) {
-        // TODO
-    }
-
     int InternalRegisterEffectDefinition(UnityAudioEffectDefinition& definition)
     {
         int numparams = P_NUM;
@@ -47,8 +64,8 @@ namespace Howdy
     UNITY_AUDIODSP_RESULT UNITY_AUDIODSP_CALLBACK CreateCallback(UnityAudioEffectState* state)
     {
         PaddedData* paddedData = new PaddedData;
-        auto* eventQueue = new rigtorp::SPSCQueue<common::Event>(common::kEventQueueLength);
-        common::InitStateData(paddedData->data.state, eventQueue, state->samplerate);
+        common::InitStateData(paddedData->data.state, &gEventQueue, state->samplerate);
+        gSynthTicks = &(paddedData->data.state.tickTime);
         state->effectdata = paddedData;     
         AudioPluginUtil::InitParametersFromDefinitions(InternalRegisterEffectDefinition, paddedData->data.p);
         // CalcPattern(&effectdata->data);
@@ -58,7 +75,6 @@ namespace Howdy
     UNITY_AUDIODSP_RESULT UNITY_AUDIODSP_CALLBACK ReleaseCallback(UnityAudioEffectState* state)
     {
         PaddedData* paddedData = state->GetEffectData<PaddedData>();
-        delete paddedData->data.state.events;
         delete paddedData;
         return UNITY_AUDIODSP_OK;
     }

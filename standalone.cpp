@@ -43,7 +43,8 @@ int main(void)
     printf("PortAudio Test: output sine wave. SR = %d, BufSize = %d\n", SAMPLE_RATE, FRAMES_PER_BUFFER);
 
     common::StateData state;
-    rigtorp::SPSCQueue<common::Event> eventQueue(common::kEventQueueLength);
+    common::EventQueue eventQueue(common::kEventQueueLength);
+    common::InitEventQueueWithSequence(&eventQueue, SAMPLE_RATE);
     common::InitStateData(state, &eventQueue, SAMPLE_RATE);
 
     err = Pa_Initialize();

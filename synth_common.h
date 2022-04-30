@@ -12,7 +12,6 @@ namespace common {
 
     static inline float const kSmallAmplitude = 0.0001f;
 
-
     // TODO: use a lookup table!!!
     float MidiToFreq(int midi) {
         int const a4 = 69;  // 440Hz
@@ -34,6 +33,7 @@ namespace common {
     };
 
     static inline int const kEventQueueLength = 64;
+    typedef rigtorp::SPSCQueue<Event> EventQueue;
 
     struct StateData {
         float f = 440.0f;
@@ -62,7 +62,7 @@ namespace common {
         AdsrState ampEnvState = AdsrState::Closed;
         float lastNoteOnAmpEnvValue = 0.0f;
 
-        rigtorp::SPSCQueue<Event>* events = nullptr;
+        EventQueue* events = nullptr;
 
         int tickTime = 0;
 
@@ -106,7 +106,7 @@ namespace common {
         return v;
     }
 
-    void InitStateData(StateData& state, rigtorp::SPSCQueue<Event>* eventQueue, int sampleRate) {
+    void InitStateData(StateData& state, EventQueue* eventQueue, int sampleRate) {
         state.left_phase = state.right_phase = 0.0f;
         state.f = 440.0f;
         state.lp0 = 0.0f;
@@ -127,8 +127,9 @@ namespace common {
         state.ampEnvReleaseTime = 0.5f;
 
         state.events = eventQueue;
+    }
 
-        // PROGRAM A SEQUENCER USING EVENTS!!!
+    void InitEventQueueWithSequence(EventQueue* queue, int sampleRate) {
         int const bpm = 200;
         int const kSamplesPerBeat = (sampleRate * 60) / bpm;
         for (int i = 0; i < 16; ++i) {
@@ -136,11 +137,11 @@ namespace common {
             e.type = EventType::NoteOn;
             e.timeInTicks = kSamplesPerBeat*i;
             e.midiNote = 69 + i;
-            state.events->push(e);
+            queue->push(e);
 
             e.type = EventType::NoteOff;
             e.timeInTicks = kSamplesPerBeat*i + (kSamplesPerBeat / 2);
-            state.events->push(e);
+            queue->push(e);
         }
     }
 

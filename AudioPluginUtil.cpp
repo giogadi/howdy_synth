@@ -1,16 +1,6 @@
 #include "AudioPluginUtil.h"
 #include <stdarg.h>
 
-namespace Howdy
-{
-    extern float gNewFreq;
-}
-
-void SetFreq(float freq)
-{
-    Howdy::gNewFreq = freq;
-}
-
 namespace AudioPluginUtil
 {
 
