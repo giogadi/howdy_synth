@@ -26,6 +26,14 @@ namespace Howdy
         unsigned char pad[(sizeof(Data) + 15) & ~15]; 
     };
 
+    void NoteOn(int midiNum, int ticksUntilEvent) {
+        // TODO
+    }
+
+    void NoteOff(int midiNum, int ticksUntilEvent) {
+        // TODO
+    }
+
     int InternalRegisterEffectDefinition(UnityAudioEffectDefinition& definition)
     {
         int numparams = P_NUM;
@@ -39,7 +47,8 @@ namespace Howdy
     UNITY_AUDIODSP_RESULT UNITY_AUDIODSP_CALLBACK CreateCallback(UnityAudioEffectState* state)
     {
         PaddedData* paddedData = new PaddedData;
-        common::InitStateData(paddedData->data.state, state->samplerate);
+        auto* eventQueue = new rigtorp::SPSCQueue<common::Event>(common::kEventQueueLength);
+        common::InitStateData(paddedData->data.state, eventQueue, state->samplerate);
         state->effectdata = paddedData;     
         AudioPluginUtil::InitParametersFromDefinitions(InternalRegisterEffectDefinition, paddedData->data.p);
         // CalcPattern(&effectdata->data);
@@ -49,6 +58,7 @@ namespace Howdy
     UNITY_AUDIODSP_RESULT UNITY_AUDIODSP_CALLBACK ReleaseCallback(UnityAudioEffectState* state)
     {
         PaddedData* paddedData = state->GetEffectData<PaddedData>();
+        delete paddedData->data.state.events;
         delete paddedData;
         return UNITY_AUDIODSP_OK;
     }

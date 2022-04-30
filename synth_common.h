@@ -2,11 +2,16 @@
 #include <math.h>
 #include <string.h>
 
-namespace common {
-    float const kPi = 3.141592653589793f;
+#include "SPSCQueue.h"
 
-    float const kSemitoneRatio = 1.05946309f;
-    float const kFifthRatio = 1.49830703f;
+namespace common {
+    static inline float const kPi = 3.141592653589793f;
+
+    static inline float const kSemitoneRatio = 1.05946309f;
+    static inline float const kFifthRatio = 1.49830703f;
+
+    static inline float const kSmallAmplitude = 0.0001f;
+
 
     // TODO: use a lookup table!!!
     float MidiToFreq(int midi) {
@@ -22,6 +27,10 @@ namespace common {
         EventType type;
         int timeInTicks = 0;
         int midiNote = 0;
+    };
+
+    enum class AdsrState {
+        Closed, Opening, Closing
     };
 
     static inline int const kEventQueueLength = 64;
@@ -48,10 +57,12 @@ namespace common {
         float ampEnvAttackTime = 0.0f;
         float ampEnvDecayTime = 0.0f;
         float ampEnvSustainLevel = 1.0f;
+        float ampEnvReleaseTime = 0.0f;
         int ampEnvTicksSinceStart = -1;
+        AdsrState ampEnvState = AdsrState::Closed;
+        float lastNoteOnAmpEnvValue = 0.0f;
 
-        Event events[kEventQueueLength];
-        int eventIx = 0;
+        rigtorp::SPSCQueue<Event>* events = nullptr;
 
         int tickTime = 0;
 
@@ -95,7 +106,7 @@ namespace common {
         return v;
     }
 
-    void InitStateData(StateData& state, int sampleRate) {
+    void InitStateData(StateData& state, rigtorp::SPSCQueue<Event>* eventQueue, int sampleRate) {
         state.left_phase = state.right_phase = 0.0f;
         state.f = 440.0f;
         state.lp0 = 0.0f;
@@ -110,25 +121,26 @@ namespace common {
         state.cutoffLFOFreq = 10.0f;
         state.cutoffLFOGain = 0.0f;
         state.cutoffLFOPhase = 0.0f;
-        state.ampEnvAttackTime = 0.1f;
-        state.ampEnvDecayTime = 0.5f;
-        state.ampEnvSustainLevel = 0.0f;
+        state.ampEnvAttackTime = 0.01f;
+        state.ampEnvDecayTime = 0.1f;
+        state.ampEnvSustainLevel = 0.5f;
+        state.ampEnvReleaseTime = 0.5f;
 
-        for (int i = 0; i < kEventQueueLength; ++i) {
-            state.events[i].type = EventType::None;
-        }
+        state.events = eventQueue;
 
         // PROGRAM A SEQUENCER USING EVENTS!!!
         int const bpm = 200;
         int const kSamplesPerBeat = (sampleRate * 60) / bpm;
         for (int i = 0; i < 16; ++i) {
-            state.events[2*i].type = EventType::NoteOn;
-            state.events[2*i].timeInTicks = kSamplesPerBeat*i;
-            state.events[2*i].midiNote = 69 + i;
+            Event e;
+            e.type = EventType::NoteOn;
+            e.timeInTicks = kSamplesPerBeat*i;
+            e.midiNote = 69 + i;
+            state.events->push(e);
 
-            state.events[2*i+1].type = EventType::NoteOff;
-            state.events[2*i+1].timeInTicks = kSamplesPerBeat*i + (kSamplesPerBeat / 2);
-            state.events[2*i+1].midiNote = 69 + i;
+            e.type = EventType::NoteOff;
+            e.timeInTicks = kSamplesPerBeat*i + (kSamplesPerBeat / 2);
+            state.events->push(e);
         }
     }
 
@@ -138,33 +150,34 @@ namespace common {
         float const k = state->cutoffK;  // between [0,4], unstable at 4
         int const attackTimeInTicks = state->ampEnvAttackTime * sampleRate;
         int const decayTimeInTicks = state->ampEnvDecayTime * sampleRate;
+        int const releaseTimeInTicks = state->ampEnvReleaseTime * sampleRate;
         
         for(int i = 0; i < framesPerBuffer; ++i)
         {
-            // TODO: Detect when we've wrapped around to the front of the ring
-            // buffer (although that will only happen when adding items, not
-            // consuming them)
-            Event* e = &(state->events[state->eventIx]);
-            while (e->type != EventType::None && state->tickTime >= e->timeInTicks) {
+            Event* e = state->events->front();
+            while (e != nullptr && state->tickTime >= e->timeInTicks) {
                 if (e->timeInTicks == state->tickTime) {
                     switch (e->type) {
                         case EventType::NoteOn: {
                             state->f = MidiToFreq(e->midiNote);
                             state->ampEnvTicksSinceStart = 0;
+                            state->ampEnvState = AdsrState::Opening;
                         }
                             break;
                         case EventType::NoteOff: {
-                            // TODO
+                            // TODO: ignoring the note. assuming monophony for now
+                            state->ampEnvTicksSinceStart = 0;
+                            state->ampEnvState = AdsrState::Closing;                
                         }
                             break;
-                        default: {
+                        case EventType::None: {
                             // will never happen
                         }
                             break;
                     }
                 }
-                state->eventIx = (state->eventIx + 1) % kEventQueueLength;
-                e = &(state->events[state->eventIx]);
+                state->events->pop();
+                e = state->events->front();
             }
 
             // Get pitch LFO value
@@ -215,19 +228,53 @@ namespace common {
             v = state->lp3;
 
             // Amplitude envelope
-            float ampEnvValue = 1.0f;
-            if (state->ampEnvTicksSinceStart < attackTimeInTicks) {
-                // attack phase
-                float const ampEnvT = fmin(1.0f, (float) state->ampEnvTicksSinceStart / (float) attackTimeInTicks);
-                float const startAmp = 0.0001f;
-                float const factor = 1.0f / startAmp;
-                ampEnvValue = startAmp*powf(factor, ampEnvT);
-            } else {
-                // decay phase
-                int ticksSinceDecayStart = state->ampEnvTicksSinceStart - attackTimeInTicks;
-                float const t = fmin(1.0f, (float) ticksSinceDecayStart / (float) decayTimeInTicks);
-                float const sustain = fmax(0.0001f, state->ampEnvSustainLevel);
-                ampEnvValue = 1.0f*powf(sustain, t);
+            float ampEnvValue = 0.0f;
+            switch (state->ampEnvState) {
+                case AdsrState::Closed: break;
+                case AdsrState::Opening: {
+                    if (state->ampEnvTicksSinceStart < attackTimeInTicks) {
+                        // attack phase
+                        float t;
+                        if (attackTimeInTicks == 0) {
+                            t = 1.0f;
+                        } else {
+                            t = fmin(1.0f, (float) state->ampEnvTicksSinceStart / (float) attackTimeInTicks);
+                        }
+                        float const startAmp = kSmallAmplitude;
+                        float const factor = 1.0f / startAmp;
+                        ampEnvValue = startAmp*powf(factor, t);
+                    } else {
+                        // decay phase
+                        float t;
+                        if (decayTimeInTicks == 0) {
+                            t = 1.0f;
+                        } else {
+                            int ticksSinceDecayStart = state->ampEnvTicksSinceStart - attackTimeInTicks;
+                            t = fmin(1.0f, (float) ticksSinceDecayStart / (float) decayTimeInTicks);
+                        }                        
+                        float const sustain = fmax(kSmallAmplitude, state->ampEnvSustainLevel);
+                        ampEnvValue = 1.0f*powf(sustain, t);
+                    }
+                    state->lastNoteOnAmpEnvValue = ampEnvValue;
+                    break;
+                }
+                case AdsrState::Closing: {
+                    // release phase. release time defined as how long it takes
+                    // to get from value just before release down to -80db or
+                    // w/e.
+                    if (state->ampEnvTicksSinceStart > releaseTimeInTicks) {
+                        state->ampEnvState = AdsrState::Closed;
+                        break;
+                    }
+                    float t;
+                    if (releaseTimeInTicks == 0) {
+                        t = 1.0f;
+                    } else {
+                        t = fmin(1.0f, (float) state->ampEnvTicksSinceStart / (float) releaseTimeInTicks);
+                    }
+                    ampEnvValue = state->lastNoteOnAmpEnvValue*powf(kSmallAmplitude / state->lastNoteOnAmpEnvValue, t);                    
+                    break;
+                }
             }
             ++state->ampEnvTicksSinceStart;
 
