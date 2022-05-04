@@ -29,5 +29,5 @@ DECLARE_EFFECT("Demo HowdySynth", Howdy)
 #endif
 
 #if PLATFORM_OSX | (PLATFORM_WIN && !PLATFORM_WINRT)
-//DECLARE_EFFECT("Demo Synthesizer", Synthesizer)
+DECLARE_EFFECT("Demo UnitySynth", UnitySynth)
 #endif
